@@ -18,8 +18,10 @@ const EXTRACTION_PROMPT = `You are an invoice parser. Extract the following fiel
   "vendor": "the vendor or company name",
   "amount": 0.00,
   "category": "one of: Software, Marketing, Legal, HR, Infrastructure, Office, Travel, Other",
-  "due_date": "YYYY-MM-DD or null if not found"
+  "due_date": "YYYY-MM-DD or null if not found",
+  "confidence_score": 0.00
 }
+confidence_score is a number between 0 and 1 representing how confident you are in the overall extraction. Use 0.95+ when all fields are clearly visible, 0.75-0.94 when some fields required inference, below 0.75 when the document is unclear or fields are missing.
 If a field cannot be determined, use null.`;
 
 function detectMimeType(url: string, contentType: string | null): string {
@@ -76,7 +78,7 @@ export async function POST(req: NextRequest) {
     { apiVersion: "v1" } satisfies RequestOptions,
   );
 
-  let extracted: { vendor: string | null; amount: number | null; category: string | null; due_date: string | null };
+  let extracted: { vendor: string | null; amount: number | null; category: string | null; due_date: string | null; confidence_score: number | null };
   try {
     const result = await model.generateContent([
       EXTRACTION_PROMPT,
@@ -110,6 +112,7 @@ export async function POST(req: NextRequest) {
       category: extracted.category ?? null,
       due_date: extracted.due_date ?? null,
       suggested_rail: suggestedRail,
+      confidence_score: typeof extracted.confidence_score === "number" ? extracted.confidence_score : null,
     })
     .select()
     .single();
@@ -125,6 +128,7 @@ export async function POST(req: NextRequest) {
     category: inserted.category,
     due_date: inserted.due_date,
     suggested_rail: inserted.suggested_rail,
+    confidence_score: inserted.confidence_score,
     cc_fee: ccFee,
     a2a_fee: a2aFee,
   });

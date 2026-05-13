@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useMemo } from "react";
-import { CheckCircle, Loader2 } from "lucide-react";
+import { useState, useMemo, useRef } from "react";
+import { CheckCircle, Loader2, Upload } from "lucide-react";
 import { Sheet } from "@/components/ui/sheet";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { InvoiceRow } from "@/types/invoice";
@@ -83,6 +83,68 @@ export function InvoicesView({ invoices: initial, fetchError }: InvoicesViewProp
   const [approving, setApproving] = useState(false);
   const [approveError, setApproveError] = useState<string | null>(null);
   const [approvingId, setApprovingId] = useState<string | null>(null);
+  const [uploadStatus, setUploadStatus] = useState<"idle" | "uploading" | "extracting" | "done">("idle");
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!fileInputRef.current) return;
+    fileInputRef.current.value = "";
+    if (!file) return;
+
+    setUploadError(null);
+    setUploadStatus("uploading");
+
+    const supabase = createSupabaseBrowserClient();
+    const fileName = `${Date.now()}-${file.name.replace(/\s+/g, "_")}`;
+
+    const { error: storageError } = await supabase.storage
+      .from("invoice")
+      .upload(fileName, file, { contentType: file.type, upsert: false });
+
+    if (storageError) {
+      setUploadError(`Upload failed: ${storageError.message}`);
+      setUploadStatus("idle");
+      return;
+    }
+
+    const { data: { publicUrl } } = supabase.storage
+      .from("invoice")
+      .getPublicUrl(fileName);
+
+    setUploadStatus("extracting");
+
+    const res = await fetch("/api/extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ invoiceUrl: publicUrl }),
+    });
+
+    const result = await res.json();
+
+    if (!res.ok) {
+      setUploadError(result.error ?? "Extraction failed");
+      setUploadStatus("idle");
+      return;
+    }
+
+    const newRow: InvoiceRow = {
+      id: result.id,
+      vendor: result.vendor ?? "Unknown",
+      amount: result.amount ?? 0,
+      date: new Date().toISOString().slice(0, 10),
+      suggestedRail: result.suggested_rail === "A2A" ? "A2A" : "Credit Card",
+      category: result.category ?? null,
+      due_date: result.due_date ?? null,
+      status: "pending",
+      confidence_score: result.confidence_score ?? null,
+    };
+
+    setRows((prev) => [newRow, ...prev]);
+    setUploadStatus("done");
+    setTimeout(() => setUploadStatus("idle"), 2000);
+  }
 
   const fees = useMemo(() => {
     const amt = parseFloat(form.amount) || 0;
@@ -189,7 +251,48 @@ export function InvoicesView({ invoices: initial, fetchError }: InvoicesViewProp
         </div>
       ) : null}
 
-      <div className="mt-10 max-w-6xl overflow-hidden rounded-xl border border-zinc-800/80 bg-zinc-900/40 shadow-sm ring-1 ring-zinc-800/50">
+      <div className="mt-6 flex max-w-6xl items-center justify-between">
+        <div>
+          {uploadError && (
+            <p className="text-xs text-red-400">{uploadError}</p>
+          )}
+        </div>
+        <div className="flex items-center gap-3">
+          {uploadStatus === "uploading" && (
+            <span className="flex items-center gap-2 text-xs text-zinc-400">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Uploading…
+            </span>
+          )}
+          {uploadStatus === "extracting" && (
+            <span className="flex items-center gap-2 text-xs text-zinc-400">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Extracting with AI…
+            </span>
+          )}
+          {uploadStatus === "done" && (
+            <span className="flex items-center gap-2 text-xs text-emerald-400">
+              <CheckCircle className="h-3.5 w-3.5" /> Invoice added!
+            </span>
+          )}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".pdf,.png,.jpg,.jpeg,.webp"
+            className="hidden"
+            onChange={handleUpload}
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploadStatus === "uploading" || uploadStatus === "extracting"}
+            className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <Upload className="h-4 w-4" />
+            Upload Invoice
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-4 max-w-6xl overflow-hidden rounded-xl border border-zinc-800/80 bg-zinc-900/40 shadow-sm ring-1 ring-zinc-800/50">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[960px] text-left text-sm">
             <thead>
